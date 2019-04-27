@@ -7,7 +7,9 @@ extern crate http;
 extern crate prost;
 extern crate tokio;
 extern crate tower_grpc;
-extern crate tower_h2;
+extern crate tower_hyper;
+extern crate hyper;
+extern crate tower_service;
 
 pub mod metadata {
     include!(concat!(env!("OUT_DIR"), "/metadata.rs"));
@@ -15,11 +17,11 @@ pub mod metadata {
 
 use metadata::{server, EnterReply, EnterRequest};
 
-use futures::{future, Future, Stream};
-use tokio::executor::DefaultExecutor;
+use futures::{future, Future, Stream, Poll};
 use tokio::net::TcpListener;
+use tower_hyper::{Server, Body};
 use tower_grpc::{Request, Response};
-use tower_h2::Server;
+use tower_service::Service;
 
 #[derive(Clone, Debug)]
 struct Door;
@@ -51,8 +53,7 @@ pub fn main() {
 
     let new_service = server::DoormanServer::new(Door);
 
-    let h2_settings = Default::default();
-    let mut h2 = Server::new(new_service, h2_settings, DefaultExecutor::current());
+    let mut server = Server::new(new_service);
 
     let addr = "[::1]:50051".parse().unwrap();
     let bind = TcpListener::bind(&addr).expect("bind");
@@ -64,12 +65,28 @@ pub fn main() {
                 return Err(e);
             }
 
-            let serve = h2.serve(sock);
-            tokio::spawn(serve.map_err(|e| error!("h2 error: {:?}", e)));
+            let serve = server.serve(sock);
+            hyper::rt::spawn(serve.map_err(|e| error!("h2 error: {:?}", e)));
 
             Ok(())
         })
         .map_err(|e| eprintln!("accept error: {}", e));
 
-    tokio::run(serve);
+    hyper::rt::run(serve);
+}
+
+impl<T> Service<hyper::Request<Body>> for server::DoormanServer<T> {
+    type Response = hyper::Response<tower_hyper::Body>;
+    type Error = hyper::Error;
+    type Future = future::FutureResult<Self::Response, Self::Error>;
+
+    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+        Ok(().into())
+    }
+
+    fn call(&mut self, req: hyper::Request<Body>) -> Self::Future {
+        let body = req.into_body();
+        let res = hyper::Response::new(body);
+        future::ok(res)
+    }
 }

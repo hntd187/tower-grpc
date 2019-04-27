@@ -6,16 +6,16 @@ extern crate log;
 extern crate prost;
 extern crate tokio;
 extern crate tower_grpc;
-extern crate tower_h2;
+extern crate tower_hyper;
 extern crate tower_request_modifier;
 extern crate tower_service;
 extern crate tower_util;
+extern crate hyper;
 
 use futures::{Future, Poll};
-use tokio::executor::DefaultExecutor;
 use tokio::net::tcp::{ConnectFuture, TcpStream};
 use tower_grpc::Request;
-use tower_h2::client;
+use tower_hyper::client;
 use tower_service::Service;
 use tower_util::MakeService;
 
@@ -27,9 +27,7 @@ pub fn main() {
     let _ = ::env_logger::init();
 
     let uri: http::Uri = format!("http://[::1]:50051").parse().unwrap();
-
-    let h2_settings = Default::default();
-    let mut make_client = client::Connect::new(Dst, h2_settings, DefaultExecutor::current());
+    let mut make_client = client::Connect::new(Dst, client::Builder::new());
 
     let doorman = make_client
         .make_service(())
@@ -65,7 +63,7 @@ pub fn main() {
             println!("ERR = {:?}", e);
         });
 
-    tokio::run(doorman);
+    hyper::rt::run(doorman);
 }
 
 struct Dst;

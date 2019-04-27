@@ -6,7 +6,9 @@ extern crate log;
 extern crate prost;
 extern crate tokio;
 extern crate tower_grpc;
-extern crate tower_h2;
+extern crate hyper;
+extern crate tower_hyper;
+extern crate tower_service;
 
 pub mod hello_world {
     include!(concat!(env!("OUT_DIR"), "/helloworld.rs"));
@@ -14,11 +16,12 @@ pub mod hello_world {
 
 use hello_world::{server, HelloReply, HelloRequest};
 
-use futures::{future, Future, Stream};
-use tokio::executor::DefaultExecutor;
+use futures::{future, Future, Poll, Stream};
+use tower_hyper::body::Body;
+use tower_hyper::server::Server;
+use tower_service::Service;
 use tokio::net::TcpListener;
 use tower_grpc::{Request, Response};
-use tower_h2::Server;
 
 #[derive(Clone, Debug)]
 struct Greet;
@@ -42,9 +45,7 @@ pub fn main() {
 
     let new_service = server::GreeterServer::new(Greet);
 
-    let h2_settings = Default::default();
-    let mut h2 = Server::new(new_service, h2_settings, DefaultExecutor::current());
-
+    let mut hyper = Server::new(new_service);
     let addr = "[::1]:50051".parse().unwrap();
     let bind = TcpListener::bind(&addr).expect("bind");
 
@@ -55,12 +56,28 @@ pub fn main() {
                 return Err(e);
             }
 
-            let serve = h2.serve(sock);
-            tokio::spawn(serve.map_err(|e| error!("h2 error: {:?}", e)));
+            let serve = hyper.serve(sock);
+            hyper::rt::spawn(serve.map_err(|e| error!("h2 error: {:?}", e)));
 
             Ok(())
         })
         .map_err(|e| eprintln!("accept error: {}", e));
 
-    tokio::run(serve)
+    hyper::rt::run(serve)
+}
+
+impl<T> Service<hyper::Request<tower_hyper::Body>> for server::GreeterServer<T> {
+    type Response = hyper::Response<tower_hyper::Body>;
+    type Error = hyper::Error;
+    type Future = future::FutureResult<Self::Response, Self::Error>;
+
+    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+        Ok(().into())
+    }
+
+    fn call(&mut self, req: hyper::Request<Body>) -> Self::Future {
+        let body = req.into_body();
+        let res = hyper::Response::new(body);
+        future::ok(res)
+    }
 }

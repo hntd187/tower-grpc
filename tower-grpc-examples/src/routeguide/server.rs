@@ -9,12 +9,12 @@ extern crate log;
 extern crate prost;
 extern crate tokio;
 extern crate tower_grpc;
-extern crate tower_h2;
-
 extern crate serde;
 extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;
+extern crate tower_service;
+extern crate tower_hyper;
 
 mod data;
 pub mod routeguide {
@@ -23,16 +23,17 @@ pub mod routeguide {
 use routeguide::{server, Feature, Point, Rectangle, RouteNote, RouteSummary};
 
 use futures::sync::mpsc;
-use futures::{future, stream, Future, Sink, Stream};
-use tokio::executor::DefaultExecutor;
+use futures::{future, stream, Future, Sink, Stream, Poll};
 use tokio::net::TcpListener;
 use tower_grpc::{Request, Response, Streaming};
-use tower_h2::Server;
+use tower_hyper::Server;
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tower_service::Service;
+use tower_hyper::Body;
 
 #[derive(Debug, Clone)]
 struct RouteGuide {
@@ -249,8 +250,7 @@ pub fn main() {
 
     let new_service = server::RouteGuideServer::new(handler);
 
-    let h2_settings = Default::default();
-    let mut h2 = Server::new(new_service, h2_settings, DefaultExecutor::current());
+    let mut server = Server::new(new_service);
 
     let addr = "127.0.0.1:10000".parse().unwrap();
     let bind = TcpListener::bind(&addr).expect("bind");
@@ -264,12 +264,28 @@ pub fn main() {
                 return Err(e);
             }
 
-            let serve = h2.serve(sock);
-            tokio::spawn(serve.map_err(|e| error!("h2 error: {:?}", e)));
+            let serve = server.serve(sock);
+            hyper::rt::spawn(serve.map_err(|e| error!("h2 error: {:?}", e)));
 
             Ok(())
         })
         .map_err(|e| eprintln!("accept error: {}", e));
 
-    tokio::run(serve);
+    hyper::rt::run(serve);
+}
+
+impl<T> Service<hyper::Request<Body>> for server::RouteGuideServer<T> {
+    type Response = hyper::Response<tower_hyper::Body>;
+    type Error = hyper::Error;
+    type Future = future::FutureResult<Self::Response, Self::Error>;
+
+    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+        Ok(().into())
+    }
+
+    fn call(&mut self, req: hyper::Request<Body>) -> Self::Future {
+        let body = req.into_body();
+        let res = hyper::Response::new(body);
+        future::ok(res)
+    }
 }
